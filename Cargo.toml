@@ -1,0 +1,13 @@
+[package]
+name = "ecr-insights"
+version = "0.1.0"
+authors = ["softprops <d.tangren@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chrono = "0.4"
+rusoto_core = "0.42"
+rusoto_ecr = "0.42"
+tabwriter = "1.1"
