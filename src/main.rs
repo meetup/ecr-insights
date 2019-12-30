@@ -98,7 +98,9 @@ fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let ecr = EcrClient::new(Region::default());
     let mut writer = TabWriter::new(stdout());
-    let total_cost: Result<f64, IoError> = repos(&ecr)?.into_iter().try_fold(0f64, |cost, repo| {
+    let mut repos = repos(&ecr)?;
+    repos.sort_by(|a, b| b.latest_image_size.cmp(&a.latest_image_size));
+    let total_cost: Result<f64, IoError> = repos.into_iter().try_fold(0f64, |cost, repo| {
         let monthly_cost = repo.monthly_cost();
         let Repo {
             name,
