@@ -1,4 +1,4 @@
-use chrono::NaiveDateTime;
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rusoto_core::Region;
 use rusoto_ecr::{
     DescribeImagesRequest, DescribeRepositoriesRequest, Ecr, EcrClient, ImageDetail, Repository,
@@ -71,17 +71,23 @@ fn load_all_repositories(
     }
 }
 
+fn pushed_at(details: &ImageDetail) -> NaiveDateTime {
+    NaiveDateTime::from_timestamp(details.image_pushed_at.unwrap_or_default() as i64, 0)
+}
+
 fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
     load_all_repositories(&ecr, None)?
         .into_iter()
         .try_fold(Vec::new(), |mut repos, repo| {
             let repository_name = repo.repository_name.unwrap_or_default();
             let mut images = load_all_images(&ecr, repository_name.clone(), None)?;
-            images.sort_by(|a, b| {
-                NaiveDateTime::from_timestamp(b.image_pushed_at.unwrap_or_default() as i64, 0).cmp(
-                    &NaiveDateTime::from_timestamp(a.image_pushed_at.unwrap_or_default() as i64, 0),
-                )
-            });
+            let now = Utc::now().naive_utc();
+            let first_of_the_month = NaiveDateTime::new(
+                NaiveDate::from_ymd(now.year(), now.month(), 1),
+                NaiveTime::from_hms(0, 0, 0),
+            );
+            images.retain(|details| pushed_at(details) < first_of_the_month);
+            images.sort_by(|a, b| pushed_at(b).cmp(&pushed_at(a)));
             repos.push(Repo {
                 name: repository_name,
                 latest_image_size: images
@@ -109,12 +115,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         } = repo;
         writeln!(
             writer,
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t${:.2}",
             name, latest_image_size, hosted_images, monthly_cost
         )?;
         Ok(cost + monthly_cost)
     });
-    writeln!(writer, "\t\t\t{}", total_cost?)?;
+    writeln!(writer, "\t\t\t${:.2}", total_cost?)?;
     writer.flush()?;
 
     Ok(())
