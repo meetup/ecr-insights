@@ -12,16 +12,15 @@ use tabwriter::TabWriter;
 struct Repo {
     name: String,
     latest_image_size: i64,
+    aggregate_image_size: i64,
     hosted_images: usize,
 }
 
 impl Repo {
+    /// Storage is $0.10 per GB-month
+    /// https://aws.amazon.com/ecr/pricing/
     fn monthly_cost(&self) -> f64 {
-        // Storage is $0.10 per GB-month
-        // https://aws.amazon.com/ecr/pricing/
-        (self.latest_image_size as f64 / (1024 * 1024 * 1024) as f64)
-            * self.hosted_images as f64
-            * 0.10
+        (self.aggregate_image_size as f64 / (1024 * 1024 * 1024) as f64) * 0.10
     }
 }
 
@@ -95,6 +94,10 @@ fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
                     .next()
                     .map(|details| details.image_size_in_bytes.unwrap_or_default())
                     .unwrap_or_default(),
+                aggregate_image_size: images
+                    .iter()
+                    .map(|details| details.image_size_in_bytes.unwrap_or_default())
+                    .sum(),
                 hosted_images: images.len(),
             });
             Ok(repos)
@@ -112,6 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             name,
             latest_image_size,
             hosted_images,
+            ..
         } = repo;
         writeln!(
             writer,
