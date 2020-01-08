@@ -7,10 +7,12 @@ use std::{
     error::Error,
     io::{stdout, Error as IoError, Write},
 };
+use structopt::StructOpt;
 use tabwriter::TabWriter;
 
 struct Repo {
     name: String,
+    last_pushed_at: Option<String>,
     latest_image_size: i64,
     aggregate_image_size: i64,
     hosted_images: usize,
@@ -22,6 +24,13 @@ impl Repo {
     fn monthly_cost(&self) -> f64 {
         (self.aggregate_image_size as f64 / (1024 * 1024 * 1024) as f64) * 0.10
     }
+}
+
+#[derive(StructOpt)]
+struct Opts {
+    #[structopt(long, short, default_value = "tsv")]
+    /// output format: tsv or csv
+    format: String,
 }
 
 fn load_all_images(
@@ -89,6 +98,10 @@ fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
             images.sort_by(|a, b| pushed_at(b).cmp(&pushed_at(a)));
             repos.push(Repo {
                 name: repository_name,
+                last_pushed_at: images
+                .iter()
+                .next()
+                .map(|details| pushed_at(details).to_string()),
                 latest_image_size: images
                     .iter()
                     .next()
@@ -105,6 +118,7 @@ fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let Opts { format } = Opts::from_args();
     let ecr = EcrClient::new(Region::default());
     let mut writer = TabWriter::new(stdout());
     let mut repos = repos(&ecr)?;
@@ -113,19 +127,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         let monthly_cost = repo.monthly_cost();
         let Repo {
             name,
+            last_pushed_at,
             latest_image_size,
             hosted_images,
             ..
         } = repo;
-        writeln!(
-            writer,
-            "{}\t{}\t{}\t${:.2}",
-            name, latest_image_size, hosted_images, monthly_cost
-        )?;
+        match &format[..] {
+            "tsv" => {
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}\t${:.2}",
+                    name, last_pushed_at.unwrap_or_default(), latest_image_size, hosted_images, monthly_cost
+                )?;
+            }
+            "csv" => {
+                println!(
+                    "{},{}, {},{},${:.2}",
+                    name, last_pushed_at.unwrap_or_default(), latest_image_size, hosted_images, monthly_cost
+                );
+            }
+            _ => (),
+        }
+
         Ok(cost + monthly_cost)
     });
-    writeln!(writer, "\t\t\t${:.2}", total_cost?)?;
-    writer.flush()?;
+    match &format[..] {
+        "tsv" => {
+            writeln!(writer, "\t\t\t\t${:.2}", total_cost?)?;
+            writer.flush()?;
+        }
+        _ => (),
+    }
 
     Ok(())
 }
