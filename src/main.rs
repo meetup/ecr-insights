@@ -15,6 +15,7 @@ struct Repo {
     last_pushed_at: Option<String>,
     latest_image_size: i64,
     aggregate_image_size: i64,
+    recent_image_size: i64,
     hosted_images: usize,
 }
 
@@ -24,6 +25,12 @@ impl Repo {
     fn monthly_cost(&self) -> f64 {
         (self.aggregate_image_size as f64 / (1024 * 1024 * 1024) as f64) * 0.10
     }
+
+    /// Storage is $0.10 per GB-month
+    /// https://aws.amazon.com/ecr/pricing/
+    fn monthly_capped_cost(&self) -> f64 {
+        (self.recent_image_size as f64 / (1024 * 1024 * 1024) as f64) * 0.10
+    }
 }
 
 #[derive(StructOpt)]
@@ -31,6 +38,9 @@ struct Opts {
     #[structopt(long, short, default_value = "tsv")]
     /// output format: tsv or csv
     format: String,
+    #[structopt(long, short, default_value = "2")]
+    /// capped number of images for forcast pricing (default 2)
+    cap: usize,
 }
 
 fn load_all_images(
@@ -83,7 +93,10 @@ fn pushed_at(details: &ImageDetail) -> NaiveDateTime {
     NaiveDateTime::from_timestamp(details.image_pushed_at.unwrap_or_default() as i64, 0)
 }
 
-fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
+fn repos(
+    ecr: &EcrClient,
+    cap: usize,
+) -> Result<Vec<Repo>, Box<dyn Error>> {
     load_all_repositories(&ecr, None)?
         .into_iter()
         .try_fold(Vec::new(), |mut repos, repo| {
@@ -96,18 +109,23 @@ fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
             );
             images.retain(|details| pushed_at(details) < first_of_the_month);
             images.sort_by(|a, b| pushed_at(b).cmp(&pushed_at(a)));
+            let capped_images = images.clone().into_iter().take(cap).collect::<Vec<_>>();
             repos.push(Repo {
                 name: repository_name,
                 last_pushed_at: images
-                .iter()
-                .next()
-                .map(|details| pushed_at(details).to_string()),
+                    .iter()
+                    .next()
+                    .map(|details| pushed_at(details).to_string()),
                 latest_image_size: images
                     .iter()
                     .next()
                     .map(|details| details.image_size_in_bytes.unwrap_or_default())
                     .unwrap_or_default(),
                 aggregate_image_size: images
+                    .iter()
+                    .map(|details| details.image_size_in_bytes.unwrap_or_default())
+                    .sum(),
+                recent_image_size: capped_images
                     .iter()
                     .map(|details| details.image_size_in_bytes.unwrap_or_default())
                     .sum(),
@@ -118,42 +136,57 @@ fn repos(ecr: &EcrClient) -> Result<Vec<Repo>, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let Opts { format } = Opts::from_args();
+    let Opts { format, cap } = Opts::from_args();
     let ecr = EcrClient::new(Region::default());
     let mut writer = TabWriter::new(stdout());
-    let mut repos = repos(&ecr)?;
+    let mut repos = repos(&ecr, cap)?;
     repos.sort_by(|a, b| b.latest_image_size.cmp(&a.latest_image_size));
-    let total_cost: Result<f64, IoError> = repos.into_iter().try_fold(0f64, |cost, repo| {
-        let monthly_cost = repo.monthly_cost();
-        let Repo {
-            name,
-            last_pushed_at,
-            latest_image_size,
-            hosted_images,
-            ..
-        } = repo;
-        match &format[..] {
-            "tsv" => {
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}\t${:.2}",
-                    name, last_pushed_at.unwrap_or_default(), latest_image_size, hosted_images, monthly_cost
-                )?;
-            }
-            "csv" => {
-                println!(
-                    "{},{}, {},{},${:.2}",
-                    name, last_pushed_at.unwrap_or_default(), latest_image_size, hosted_images, monthly_cost
-                );
-            }
-            _ => (),
-        }
+    let total_cost: Result<(f64, f64), IoError> =
+        repos
+            .into_iter()
+            .try_fold((0f64, 0f64), |(cost, capped_cost), repo| {
+                let monthly_cost = repo.monthly_cost();
+                let monthly_capped_cost = repo.monthly_capped_cost();
+                let Repo {
+                    name,
+                    last_pushed_at,
+                    latest_image_size,
+                    hosted_images,
+                    ..
+                } = repo;
+                match &format[..] {
+                    "tsv" => {
+                        writeln!(
+                            writer,
+                            "{}\t{}\t{}\t{}\t${:.2}\t=> ${:.2}",
+                            name,
+                            last_pushed_at.unwrap_or_default(),
+                            latest_image_size,
+                            hosted_images,
+                            monthly_cost,
+                            monthly_capped_cost
+                        )?;
+                    }
+                    "csv" => {
+                        println!(
+                            "{},{}, {},{},${:.2},${:.2}",
+                            name,
+                            last_pushed_at.unwrap_or_default(),
+                            latest_image_size,
+                            hosted_images,
+                            monthly_cost,
+                            monthly_capped_cost
+                        );
+                    }
+                    _ => (),
+                }
 
-        Ok(cost + monthly_cost)
-    });
+                Ok((cost + monthly_cost, capped_cost + monthly_capped_cost))
+            });
     match &format[..] {
         "tsv" => {
-            writeln!(writer, "\t\t\t\t${:.2}", total_cost?)?;
+            let (monthly, capped) = total_cost?;
+            writeln!(writer, "\t\t\t\t${:.2}\t=> ${:.2}", monthly, capped)?;
             writer.flush()?;
         }
         _ => (),
