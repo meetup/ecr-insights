@@ -20,7 +20,7 @@ struct Repo {
 }
 
 impl Repo {
-    /// aws charges for storage and reports image size in bytes but docker client 
+    /// aws charges for storage and reports image size in bytes but docker client
     /// compresses which seems to be what cost reflects
     /// this is not an exact science
     const COMPRESSION: f64 = 0.65;
@@ -146,51 +146,48 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut writer = TabWriter::new(stdout());
     let mut repos = repos(&ecr, cap)?;
     repos.sort_by(|a, b| b.latest_image_size.cmp(&a.latest_image_size));
-    let totals: Result<(f64, f64), IoError> = repos.into_iter().try_fold(
-        (0f64, 0f64),
-        |(cost, capped_cost), repo| {
-            let monthly_cost = repo.monthly_cost();
-            let monthly_capped_cost = repo.monthly_capped_cost();
-            let Repo {
-                name,
-                last_pushed_at,
-                latest_image_size,
-                hosted_images,
-                ..
-            } = repo;
-            match &format[..] {
-                "tsv" => {
-                    writeln!(
-                        writer,
-                        "{}\t{}\t{}\t{}\t${:.2}\t=> ${:.2}",
-                        name,
-                        last_pushed_at.unwrap_or_default(),
-                        latest_image_size,
-                        hosted_images,
-                        monthly_cost,
-                        monthly_capped_cost
-                    )?;
+    let totals: Result<(f64, f64), IoError> =
+        repos
+            .into_iter()
+            .try_fold((0f64, 0f64), |(cost, capped_cost), repo| {
+                let monthly_cost = repo.monthly_cost();
+                let monthly_capped_cost = repo.monthly_capped_cost();
+                let Repo {
+                    name,
+                    last_pushed_at,
+                    latest_image_size,
+                    hosted_images,
+                    ..
+                } = repo;
+                match &format[..] {
+                    "tsv" => {
+                        writeln!(
+                            writer,
+                            "{}\t{}\t{}\t{}\t${:.2}\t=> ${:.2}",
+                            name,
+                            last_pushed_at.unwrap_or_default(),
+                            latest_image_size,
+                            hosted_images,
+                            monthly_cost,
+                            monthly_capped_cost
+                        )?;
+                    }
+                    "csv" => {
+                        println!(
+                            "{},{}, {},{},${:.2},${:.2}",
+                            name,
+                            last_pushed_at.unwrap_or_default(),
+                            latest_image_size,
+                            hosted_images,
+                            monthly_cost,
+                            monthly_capped_cost
+                        );
+                    }
+                    _ => (),
                 }
-                "csv" => {
-                    println!(
-                        "{},{}, {},{},${:.2},${:.2}",
-                        name,
-                        last_pushed_at.unwrap_or_default(),
-                        latest_image_size,
-                        hosted_images,
-                        monthly_cost,
-                        monthly_capped_cost
-                    );
-                }
-                _ => (),
-            }
 
-            Ok((
-                cost + monthly_cost,
-                capped_cost + monthly_capped_cost,
-            ))
-        },
-    );
+                Ok((cost + monthly_cost, capped_cost + monthly_capped_cost))
+            });
     match &format[..] {
         "tsv" => {
             let (monthly, capped) = totals?;
